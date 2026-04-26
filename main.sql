@@ -329,6 +329,8 @@ SELECT
     (SELECT COUNT(*) FROM Mitigation_Actions)
 AS total_rows;
 
+-- select queries: group by, join, order by, etc
+
 SELECT 
     t.team_name,
     SUM(c.total_cost_usd) AS total_spend
@@ -387,6 +389,8 @@ WHERE total_cost_usd > (
     SELECT AVG(total_cost_usd) FROM Cost_Records
 );
 
+-- update insert delete queries
+
 UPDATE Users
 SET role = 'senior_engineer'
 WHERE user_id IN (
@@ -402,5 +406,128 @@ AND reported_at < NOW() - INTERVAL '90 days';
 INSERT INTO Organizations (org_name, industry, country)
 VALUES ('TestOrg', 'AI', 'USA');
 
+-- create procedures/functions
 
+CREATE OR REPLACE FUNCTION add_api_call_with_cost(
+    p_user_id INTEGER,
+    p_model_id INTEGER,
+    p_team_id INTEGER,
+    p_input_tokens INTEGER,
+    p_output_tokens INTEGER,
+    p_latency_ms INTEGER,
+    p_status_code INTEGER
+)
+RETURNS VOID AS $$
+DECLARE
+    new_call_id INTEGER;
+    in_cost NUMERIC(12,6);
+    out_cost NUMERIC(12,6);
+BEGIN
+    INSERT INTO API_Calls (
+        user_id, model_id, team_id, input_tokens, output_tokens, latency_ms, status_code
+    )
+    VALUES (
+        p_user_id, p_model_id, p_team_id, p_input_tokens, p_output_tokens, p_latency_ms, p_status_code
+    )
+    RETURNING call_id INTO new_call_id;
 
+    SELECT 
+        ROUND(((p_input_tokens / 1000.0) * input_cost_per_1k)::numeric, 6),
+        ROUND(((p_output_tokens / 1000.0) * output_cost_per_1k)::numeric, 6)
+    INTO in_cost, out_cost
+    FROM LLM_Models
+    WHERE model_id = p_model_id;
+
+    INSERT INTO Cost_Records (
+        call_id, team_id, input_cost_usd, output_cost_usd, total_cost_usd, billing_period
+    )
+    VALUES (
+        new_call_id, p_team_id, in_cost, out_cost, in_cost + out_cost, DATE_TRUNC('month', NOW())::date
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+-- triggers
+
+CREATE TABLE Failed_Transaction_Log (
+    log_id SERIAL PRIMARY KEY,
+    error_message TEXT,
+    failed_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE OR REPLACE FUNCTION log_failed_cost_insert()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.total_cost_usd < 0 THEN
+        INSERT INTO Failed_Transaction_Log (error_message)
+        VALUES ('Rejected cost record because total_cost_usd was negative.');
+
+        RAISE EXCEPTION 'Transaction failed: total_cost_usd cannot be negative.';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER prevent_negative_cost
+BEFORE INSERT OR UPDATE ON Cost_Records
+FOR EACH ROW
+EXECUTE FUNCTION log_failed_cost_insert();
+
+BEGIN;
+
+INSERT INTO Cost_Records (
+    call_id, team_id, input_cost_usd, output_cost_usd, total_cost_usd, billing_period
+)
+VALUES (
+    1, 1, 0.10, 0.20, -5.00, DATE_TRUNC('month', NOW())::date
+);
+
+COMMIT;
+
+-- indexing 
+
+ROLLBACK;
+
+-- index 1
+EXPLAIN ANALYZE
+SELECT 
+    t.team_name,
+    SUM(c.total_cost_usd) AS total_spend
+FROM Cost_Records c
+JOIN Teams t ON c.team_id = t.team_id
+GROUP BY t.team_name
+ORDER BY total_spend DESC
+LIMIT 10;
+
+CREATE INDEX idx_cost_records_team_id
+ON Cost_Records(team_id);
+
+-- index 2
+EXPLAIN ANALYZE
+SELECT 
+    m.model_name,
+    AVG(a.latency_ms) AS avg_latency
+FROM API_Calls a
+JOIN LLM_Models m ON a.model_id = m.model_id
+GROUP BY m.model_name
+ORDER BY avg_latency DESC;
+
+CREATE INDEX IF NOT EXISTS idx_api_calls_model_id
+ON API_Calls(model_id);
+
+-- index 3
+
+EXPLAIN ANALYZE
+SELECT 
+    s.system_name,
+    v.cve_id,
+    v.severity,
+    v.is_patched
+FROM Vulnerabilities v
+JOIN Systems s ON v.system_id = s.system_id
+WHERE v.severity IN ('HIGH', 'CRITICAL')
+ORDER BY v.reported_at DESC;
+
+CREATE INDEX IF NOT EXISTS idx_vulnerabilities_system_severity
+ON Vulnerabilities(system_id, severity);
