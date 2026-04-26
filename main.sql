@@ -328,3 +328,79 @@ SELECT
     (SELECT COUNT(*) FROM Incidents) +
     (SELECT COUNT(*) FROM Mitigation_Actions)
 AS total_rows;
+
+SELECT 
+    t.team_name,
+    SUM(c.total_cost_usd) AS total_spend
+FROM Cost_Records c
+JOIN Teams t ON c.team_id = t.team_id
+GROUP BY t.team_name
+ORDER BY total_spend DESC
+LIMIT 10;
+
+SELECT 
+    u.username,
+    COUNT(a.call_id) AS total_calls
+FROM API_Calls a
+JOIN Users u ON a.user_id = u.user_id
+GROUP BY u.username
+ORDER BY total_calls DESC
+LIMIT 10;
+
+SELECT 
+    m.model_name,
+    AVG(a.latency_ms) AS avg_latency
+FROM API_Calls a
+JOIN LLM_Models m ON a.model_id = m.model_id
+GROUP BY m.model_name
+ORDER BY avg_latency DESC;
+
+SELECT 
+    severity,
+    COUNT(*) AS total_incidents
+FROM Incidents
+GROUP BY severity
+ORDER BY total_incidents DESC;
+
+SELECT 
+    s.system_name,
+    v.severity,
+    v.cve_id
+FROM Vulnerabilities v
+JOIN Systems s ON v.system_id = s.system_id
+WHERE v.severity IN ('HIGH', 'CRITICAL');
+
+SELECT 
+    t.team_name,
+    COUNT(i.incident_id) AS incident_count
+FROM Incidents i
+JOIN Systems s ON i.system_id = s.system_id
+JOIN Organizations o ON i.org_id = o.org_id
+JOIN Teams t ON o.org_id = t.org_id
+GROUP BY t.team_name
+ORDER BY incident_count DESC
+LIMIT 10;
+
+SELECT *
+FROM Cost_Records
+WHERE total_cost_usd > (
+    SELECT AVG(total_cost_usd) FROM Cost_Records
+);
+
+UPDATE Users
+SET role = 'senior_engineer'
+WHERE user_id IN (
+    SELECT user_id FROM Users
+    ORDER BY RANDOM()
+    LIMIT 10
+);
+
+DELETE FROM Vulnerabilities
+WHERE is_patched = TRUE
+AND reported_at < NOW() - INTERVAL '90 days';
+
+INSERT INTO Organizations (org_name, industry, country)
+VALUES ('TestOrg', 'AI', 'USA');
+
+
+
